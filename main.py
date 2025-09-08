@@ -3,82 +3,67 @@
 import pygame
 import random
 
-# --- Below is the GameObject class from which other classes will
-# --- inherit things like movement and collision logic, health, etc.
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 720
 
+### --- GRAPHICS --- ###
+class Graphics:
+    def __init__(self, img_path=None, scale=1.0):
+        self.img = pygame.image.load(img_path) if img_path else None
+        self.scale = scale
+
+    def get_width(self):
+        if self.img:
+            return int(self.img.get_width() * self.scale)
+    
+    def get_height(self):
+        if self.img:
+            return int(self.img.get_height() * self.scale)
+    
+    def get_radius(self):
+        if self.img:
+            return self.get_width() // 2
+    
+    def draw(self, surface, pos, angle=0):
+        if self.img:
+            sprite = pygame.transform.rotozoom(self.img, -angle, self.scale)
+            rect = sprite.get_rect(center=(pos.x, pos.y))
+            surface.blit(sprite, rect.topleft)
+
+### --- PHYSICS --- ###
 class Physics:
-    def __init__(self, pos, vel=None, acc=None, facing=0, mass=1, spin_speed=0):
+    def __init__(self, pos, vel=None, acc=None, mass=1, facing=0, spin_speed=0):
         self.pos = pygame.math.Vector2(pos)
-        self.vel = pygame.math.Vector2(vel) if vel else pygame.math.Vector2()
+        if isinstance(vel, pygame.math.Vector2):
+            self.vel = vel
+        elif isinstance(vel, (tuple, list)):
+            self.vel = pygame.math.Vector2(vel)
+        elif isinstance(vel, (int, float)):
+            self.vel = pygame.math.Vector2(vel, 0)
+        elif vel is None:
+            self.vel = pygame.math.Vector2()
+        else:
+            raise TypeError(f"Invalid type for vel: {type(vel)}")
         self.acc = pygame.math.Vector2(acc) if acc else pygame.math.Vector2()
-        self.facing = facing
         self.mass = mass
+        self.facing = facing
         self.spin_speed = spin_speed
         self.spin = 0
 
     def move(self):
         self.vel += self.acc
         self.pos += self.vel
-        self.physics.current_rotation = (self.physics.current_rotation + self.physics.rotation) % 360
+        self.spin = (self.spin + self.facing) % 360
 
-class GameObject:
-    def __init__(self, pos, vel=None, acc=None, angle=0, mass=1, rotation=0, sprite=None):
-        self.pos = pygame.math.Vector2(pos)
-        self.vel = pygame.math.Vector2(vel) if vel else pygame.math.Vector2()
-        self.acc = pygame.math.Vector2(acc) if acc else pygame.math.Vector2()
-        self.angle = angle
-        self.mass = mass
-        self.rotation = rotation
-        self.current_rotation = 0
-        self.cycles = 0
-        self.wrap = True
-        self.sprite = sprite
-
-    def update(self):
-        self.vel += self.acc
-        self.pos += self.vel
-
-    def draw(self, surface):
-        if self.sprite:
-            rotated = pygame.transform.rotate(self.sprite, -self.angle)
-            rect = rotated.get_rect(center=(self.pos.x, self.pos.y))
-            surface.blit(rotated, rect.topleft)
-
-    def wrap_position(self, surface):
-
-
-    def get_radius(self):
-        if self.sprite:
-            return self.sprite.get_width() // 2
-        return 0
-    
-    def handle_collision(self, other: "GameObject"):
+    def handle_collision(self, other: "Physics"):
         if self.mass == 0 or other.mass == 0:
-            return
-
-        if isinstance(self, Laser):
-            if not isinstance(other, Player):
-                dir = other.pos - self.pos
-                if dir.length() == 0:
-                    dir = pygame.Vector2(random.uniform(-1,1), random.uniform(-1,1))
-                dir = dir.normalize()
-                other.vel += dir * self.vel.length() * self.mass
-            return
-
-        if isinstance(other, Laser):
-            if not isinstance(self, Player):
-                dir = self.pos - other.pos
-                if dir.length() == 0:
-                    dir = pygame.Vector2(random.uniform(-1,1), random.uniform(-1,1))
-                dir = dir.normalize()
-                self.vel += dir * other.vel.length() * other.mass
             return
 
         dir = self.pos - other.pos
         if dir.length() == 0:
             dir = pygame.Vector2(random.uniform(-1, 1), random.uniform(-1, 1))
         dir = dir.normalize()
-        
+
         rel_vel = self.vel - other.vel
         vel_along_normal = rel_vel.dot(dir)
 
@@ -94,56 +79,110 @@ class GameObject:
         self.vel += (impulse / m1) * dir
         other.vel -= (impulse / m2) * dir
 
-    def is_expired(self):
-        pass
+    def collides_with(self, other: "Physics", radius_self, radius_other):
+        return self.pos.distance_to(other.pos) < radius_self + radius_other
+    
+    def wrap_position(self, radius):
+        w = WINDOW_WIDTH
+        h = WINDOW_HEIGHT
+        if self.pos.x < -radius:
+            self.pos.x = w + radius
+        elif self.pos.x > w + radius:
+            self.pos.x = -radius
+        if self.pos.y < -radius:
+            self.pos.y = h + radius
+        elif self.pos.y > h + radius:
+            self.pos.y = -radius
 
-    def collides_with(self, other):
-        pass
+### --- HEALTH --- ###
+class Health:
+    def __init__(self, max_hp, is_visible):
+        self.max_hp = max_hp
+        self.hp = max_hp
+        self.is_visible = is_visible
 
-# --- Rock (Asteroid) ---
+    def draw_bar(self, surface, object: "GameObject"):
+        bar_width = self.max_hp
+        bar_height = 6
 
+        x = int(object.phys.pos.x - bar_width // 2)
+        y = int(object.phys.pos.y - object.get_radius() - 16)
+
+        hp_ratio = max(0, min(1, self.hp / self.max_hp))
+        fill_width = int(bar_width * hp_ratio)
+
+        pygame.draw.rect(surface, (60,60,60), (x, y, bar_width, bar_height))
+        pygame.draw.rect(surface, (0,220,0), (x, y, fill_width, bar_height))
+        pygame.draw.rect(surface, (0,0,0), (x, y, bar_width, bar_height), 1)
+
+### --- GAMEOBJECT --- ###
+class GameObject:
+    def __init__(self, pos, vel, mass, img_path, scale=1.0, facing=0, spin_speed=0, max_hp=100, hp_visible=False):
+        self.phys = Physics(pos, vel, mass=mass, facing=facing, spin_speed=spin_speed)
+        self.graphics = Graphics(img_path, scale)
+        self.health = Health(max_hp, hp_visible)
+
+    def update(self):
+        self.phys.move()
+        if self.graphics.img:
+            self.phys.wrap_position(self.graphics.get_radius())
+
+    def draw(self, surface):
+        self.graphics.draw(surface, self.phys.pos, self.phys.facing)
+        if self.health.is_visible:
+            self.health.draw_bar(surface, self)
+
+    def get_radius(self):
+        return self.graphics.get_radius()
+    
+    def collides_with(self, other: "GameObject"):
+        return self.phys.collides_with(other.phys, self.get_radius(), other.get_radius())
+
+    def take_damage(self, amount):
+        self.health.hp -= amount
+        if self.health.hp < 0:
+            self.health.hp = 0
+            
+    def is_dead(self):
+        return self.health.hp <= 0
+
+### --- ROCK / ASTEROID --- ###
 class Rock(GameObject):
     def __init__(self, pos):
-        sprite = pygame.image.load("door.png")
         angle = random.uniform(0, 360)
         speed = random.uniform(1, 2.5)
         dir = pygame.Vector2(1, 0).rotate(angle) * speed
         mass = random.uniform(0.5, 1.5)
-        super().__init__(pos, vel=dir, angle=angle, sprite=sprite, mass=mass)
-        self.rotation = random.uniform(-2, 2)
-        self.current_rotation = 0
-        self.cycles = 0
+        spin_speed = random.uniform(-2, 2)
+        super().__init__(pos, vel=dir, mass=mass, img_path="door.png", scale=mass, facing=angle, spin_speed=spin_speed)
+        self.health.max_hp = mass*50
+        self.health.hp = mass*50
+
+        self.is_breaking = False
+        self.break_timer = 0
+        self.break_duration = 20
 
     def update(self):
-        super().update()
-        self.current_rotation = (self.current_rotation + self.rotation) % 360
-
-        wrapped = False
-        if self.pos.x < -50:
-            self.pos.x = 1330
-            wrapped = True
-        elif self.pos.x > 1330:
-            self.pos.x = -50
-            wrapped = True
-        if self.pos.y < -50:
-            self.pos.y = 770
-            wrapped = True
-        elif self.pos.y > 770:
-            self.pos.y = -50
-            wrapped = True
-
-        if wrapped:
-            self.cycles += 1
+        if self.is_breaking:
+            self.break_timer += 1
+            self.graphics.scale *= 0.9
+        else:
+            super().update()
+            self.phys.facing = (self.phys.facing + self.phys.spin_speed) % 360
 
     def draw(self, surface):
-        resized = pygame.transform.scale_by(self.sprite, self.mass)
-        rotated = pygame.transform.rotate(resized, self.current_rotation)
-        rect = rotated.get_rect(center=(self.pos.x, self.pos.y))
-        surface.blit(rotated, rect.topleft)
+        if self.is_breaking:
+            self.graphics.draw(surface, self.phys.pos, self.phys.facing)
+        else:
+            super().draw(surface)
 
-    def is_expired(self):
-        return self.cycles >= 2
+    def is_dead(self):
+        return self.is_breaking and self.break_timer >= self.break_duration
     
+    def start_breaking(self):
+        self.is_breaking = True
+        self.break_timer = 0
+
     @classmethod
     def spawn_random(cls, rocks: list):
         edge = random.choice(['top', 'bottom', 'left', 'right'])
@@ -157,31 +196,139 @@ class Rock(GameObject):
             pos = (1320, random.randint(0, 720))
         rocks.append(cls(pos))
 
-# ~~~ LASER ~~~
-
-class Laser(GameObject):
-    def __init__(self, pos, angle):
-        self.dir = pygame.Vector2(1, 0).rotate(angle)
-        super().__init__(pos, vel=self.dir * 10, angle=angle, mass=0.005)
-        self.range = 200
-        self.distance_travelled = 0
+### --- DEBRIS --- ###
+class Debris(GameObject):
+    def __init__(self, pos, colour=(180,180,180)):
+        angle = random.uniform(0,360)
+        speed = random.uniform(2,6)
+        vel = pygame.Vector2(1,0).rotate(angle) * speed
+        super().__init__(pos, vel=vel, mass=0.01, img_path=None, scale=1.0)
+        self.lifetime = random.randint(15,30)
+        self.age = 0
+        self.colour = colour
+        self.radius = random.randint(2,6)
 
     def update(self):
         super().update()
-        self.distance_travelled += self.vel.length()
+        self.age+=1
+
+    def draw(self,surface):
+        alpha = max(0, 255 - int(255 * (self.age / self.lifetime)))
+        debris_colour = (*self.colour, alpha)
+        s = pygame.Surface((self.radius*2, self.radius*2), pygame.SRCALPHA)
+        pygame.draw.circle(s, debris_colour, (self.radius, self.radius), self.radius)
+        surface.blit(s, (self.phys.pos.x - self.radius, self.phys.pos.y - self.radius))
+
+    def is_expired(self):
+        return self.age >= self.lifetime
+    
+    def get_radius(self):
+        return self.radius
+
+### --- LASER --- ###
+class Laser(GameObject):
+    def __init__(self, pos, angle):
+        dir = pygame.Vector2(1, 0).rotate(angle)
+        super().__init__(pos, vel=dir * 10, mass=0.005, img_path=None, scale=1.0, facing=angle)
+        self.dir = dir
+        self.range = 200
+        self.distance_travelled = 0
+        self.damage = 20
+
+    def update(self):
+        super().update()
+        self.distance_travelled += self.phys.vel.length()
 
     def draw(self, surface):
-        pygame.draw.line(surface, (255,0,0), self.pos, self.pos + self.dir * 20, 3)
+        pygame.draw.line(surface, (255,0,0), self.phys.pos, self.phys.pos + self.dir * 20, 3)
 
     def is_expired(self):
         return self.distance_travelled >= self.range
-    
+
     def get_radius(self):
         return 5
 
+### --- PLAYER --- ###
+class Player(GameObject):
+    def __init__(self):
+        super().__init__((640,360), vel=(0,0), mass=2, img_path="robot.png", scale=1.0, facing=-90)
+        self.health.is_visible = True
+        self.max_speed = 5
+        self.thrust = 0.18
+        self.turn_vel = 0
+        self.turn_friction = 0.85
+        self.max_turn_speed = 6
 
-# --- Game Controller ---
+    def update(self):
+        # every frame, check which keys are pressed
+        keys = pygame.key.get_pressed()
 
+        # turning logic
+        TURN_ACC = 0.6
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            self.turn_vel -= TURN_ACC
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            self.turn_vel += TURN_ACC
+
+        self.turn_vel *= self.turn_friction
+
+        if abs(self.turn_vel) > self.max_turn_speed:
+            self.turn_vel = self.max_turn_speed * (1 if self.turn_vel > 0 else -1)
+
+        self.phys.facing += self.turn_vel
+
+        # thrust logic - forward, backward, and strafing side-to-side dependent on the facing direction
+        dir = pygame.Vector2(1, 0).rotate(self.phys.facing)
+        side = dir.rotate(90)
+        self.phys.acc = pygame.Vector2(0, 0)
+        if keys[pygame.K_UP] or keys[pygame.K_w]:
+            self.phys.acc += dir * self.thrust        
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            self.phys.acc -= dir * self.thrust
+        if keys[pygame.K_q]:
+            self.phys.acc -= side * self.thrust
+        if keys[pygame.K_e]:
+            self.phys.acc += side * self.thrust
+
+        super().update()
+
+        # clamp position to window
+        self.phys.pos.x = max(0, min(1280, self.phys.pos.x))
+        self.phys.pos.y = max(0, min(720, self.phys.pos.y))
+
+        friction = 0.99
+        self.phys.vel *= friction
+
+        if self.phys.vel.length() > self.max_speed:
+            self.phys.vel.scale_to_length(self.max_speed)
+
+### --- SCRAP --- ###
+class Scrap(GameObject):
+    def __init__(self, pos, vel, point_value=1, timer=10):
+        super().__init__(pos, vel, mass=0.1, img_path="coin.png")
+        self.point_value = point_value
+        self.timer = timer
+        self.age = 0
+
+        self.health.is_visible = False
+
+    def update(self):
+        super().update()
+        friction = 0.98
+        if self.phys.vel.length() > 0.1:
+            self.phys.vel *= friction
+        else:
+            self.phys.vel = pygame.math.Vector2(0,0)
+        
+        self.age += 1
+
+    def is_expired(self):
+        return self.age >= self.timer * 60
+    
+    def get_radius(self):
+        return 12 # <<< placeholder value
+
+### --- GAME CONTROL --- ###
 class GameCtrl:
     def __init__(self):
         pygame.init()
@@ -190,8 +337,11 @@ class GameCtrl:
         self.clock = pygame.time.Clock()
 
         self.player = Player()
+        self.points = 0
         self.lasers = []
         self.rocks = []
+        self.debris = []
+        self.scrap = []
         self.enemies = []
         self.background = pygame.image.load("background.png")
         self.window = pygame.display.set_mode((1280, 720))
@@ -213,12 +363,14 @@ class GameCtrl:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     # Shoot laser from player's position and angle
-                    self.lasers.append(Laser(self.player.pos, self.player.angle))
+                    self.lasers.append(Laser(self.player.phys.pos, self.player.phys.facing))
 
     def update(self):
         self.player.update()
         self.update_lasers()
         self.update_rocks()
+        self.update_debris()
+        self.update_scrap()
         self.check_collisions()
         
     def update_lasers(self):
@@ -228,59 +380,105 @@ class GameCtrl:
 
     def update_rocks(self):
         for rock in self.rocks:
+            if rock.health.hp <= 0 and not rock.is_breaking:
+                rock.start_breaking()
+                for _ in range(random.randint(8,16)):
+                    self.debris.append(Debris(rock.phys.pos))
+                if random.random() < 0.5:
+                    value = random.randint(1,10)
+                    self.scrap.append(Scrap(rock.phys.pos, rock.phys.vel, value))
             rock.update()
-        self.rocks = [r for r in self.rocks if not r.is_expired()]
+        self.rocks = [r for r in self.rocks if not r.is_dead()]
         self.spawner()
+
+    def update_debris(self):
+        for d in self.debris:
+            d.update()
+        self.debris = [d for d in self.debris if not d.is_expired()]
+
+    def update_scrap(self):
+        for s in self.scrap:
+            s.update()
+        self.scrap = [s for s in self.scrap if not s.is_expired()]
 
     def spawner(self):
         self.spawn_timer += 1
-        if self.spawn_timer > 120:
+        if self.spawn_timer > 120 and len(self.rocks) <= 10:
             self.spawn_timer = 0
             Rock.spawn_random(self.rocks)
 
     def check_collisions(self):
-        all_objects = [self.player] + self.rocks + self.lasers
+        to_remove = set()
+        all_objects = [self.player] + self.rocks + self.lasers + self.scrap
         for i, obj1 in enumerate(all_objects):
             for obj2 in all_objects[i+1:]:
                 if obj1.get_radius() and obj2.get_radius():
-                    if obj1.pos.distance_to(obj2.pos) < obj1.get_radius() + obj2.get_radius():
-                        obj1.handle_collision(obj2)
-                        obj2.handle_collision(obj1)
+                    if obj1.collides_with(obj2):
+                        # laser ignores player
+                        if isinstance(obj1, Laser) and isinstance(obj2, Player):
+                            continue
+                        if isinstance(obj2, Laser) and isinstance(obj1, Player):
+                            continue
+                        
+                        # laser deals damage to everything else
+                        if isinstance(obj1, Laser) and not isinstance(obj2, Laser):
+                            obj2.take_damage(obj1.damage)
+                            to_remove.add(obj1)
+                        if isinstance(obj2, Laser) and not isinstance(obj1, Laser):
+                            obj1.take_damage(obj2.damage)
+                            to_remove.add(obj2)
+
+                        # scrap increases points when it collides with the player
+                        if isinstance(obj1, Scrap) and isinstance(obj2, Player):
+                            self.points += obj1.point_value
+                            obj1.timer = 0
+                        if isinstance(obj2, Scrap) and isinstance(obj1, Player):
+                            self.points += obj2.point_value
+                            obj2.timer = 0
+                        
+                        obj1.phys.handle_collision(obj2.phys)
+                        obj2.phys.handle_collision(obj1.phys)
+
+                        # Damage calculation
+                        rel_vel = (obj1.phys.vel - obj2.phys.vel).length()
+                        k = 1  # scaling constant, tweak as needed
+                        if obj1.phys.mass > 0.1 and obj2.phys.mass > 0.1:
+                            dmg1 = k * rel_vel * (obj2.phys.mass / obj1.phys.mass)
+                            dmg2 = k * rel_vel * (obj1.phys.mass / obj2.phys.mass)
+                            obj1.take_damage(dmg1)
+                            obj2.take_damage(dmg2)
+        
+        self.lasers = [l for l in self.lasers if l not in to_remove]
 
     def draw_window(self):
-        self.window.blit(self.background, (0,0))
-        self.player.draw(self.window)
+        # parallax the background based on player position
+        parallax_factor = 0.2
+        bg_width, bg_height = self.background.get_width(), self.background.get_height()
+        offset_x = int(self.player.phys.pos.x * parallax_factor)
+        offset_y = int(self.player.phys.pos.y * parallax_factor)
+        max_x = bg_width - WINDOW_WIDTH
+        max_y = bg_height - WINDOW_HEIGHT
+        offset_x = max(0, min(offset_x, max_x))
+        offset_y = max(0, min(offset_y, max_y))
+        self.window.blit(self.background, (-offset_x, -offset_y))
+
+        # draw all existing game objects - keeping the layer order sensible (e.g. scrap below rocks)
         for laser in self.lasers:
             laser.draw(self.window)
+        self.player.draw(self.window)
+        for scrap in self.scrap:
+            scrap.draw(self.window)
+        for debr in self.debris:
+            debr.draw(self.window)
         for rock in self.rocks:
             rock.draw(self.window)
+
+        # draw all relevant text
+        points_text = self.game_font.render(f"Points: {self.points}", True, (255,255,255))
+        self.window.blit(points_text, (16,16))
+
         pygame.display.flip()
 
-class Player(GameObject):
-    def __init__(self):
-        sprite = pygame.image.load("robot.png")
-        super().__init__((640,360), sprite=sprite, mass=2)
-        self.thrust = 0.05
 
-
-    def update(self):
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_LEFT]:
-            self.angle -= 3
-        if keys[pygame.K_RIGHT]:
-            self.angle += 3
-
-        dir = pygame.Vector2(1, 0).rotate(self.angle)
-        self.acc = pygame.Vector2(0, 0)
-        if keys[pygame.K_UP]:
-            self.acc += dir * self.thrust        
-        if keys[pygame.K_DOWN]:
-            self.acc -= dir * self.thrust
-
-        super().update()
-
-        self.pos.x = max(0, min(1280, self.pos.x))
-        self.pos.y = max(0, min(720, self.pos.y))
-        
 if __name__ == "__main__":
     GameCtrl()
