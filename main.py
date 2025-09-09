@@ -101,6 +101,12 @@ class Health:
         self.hp = max_hp
         self.is_visible = is_visible
 
+    def __str__(self):
+        return f"{self.hp:>3.0f} / {self.max_hp:<3.0f}"
+    
+    def __repr__(self):
+        return f"max hp: {self.max_hp}\ncurrent hp: {self.hp}\nis health bar visible: {self.is_visible}"
+
     def draw_bar(self, surface, object: "GameObject"):
         bar_width = self.max_hp
         bar_height = 6
@@ -142,7 +148,7 @@ class GameObject:
         self.health.hp -= amount
         if self.health.hp < 0:
             self.health.hp = 0
-            
+
     def is_dead(self):
         return self.health.hp <= 0
 
@@ -229,7 +235,7 @@ class Debris(GameObject):
 class Laser(GameObject):
     def __init__(self, pos, angle):
         dir = pygame.Vector2(1, 0).rotate(angle)
-        super().__init__(pos, vel=dir * 10, mass=0.005, img_path=None, scale=1.0, facing=angle)
+        super().__init__(pos, vel=dir * 20, mass=0.005, img_path=None, scale=1.0, facing=angle)
         self.dir = dir
         self.range = 200
         self.distance_travelled = 0
@@ -240,11 +246,14 @@ class Laser(GameObject):
         self.distance_travelled += self.phys.vel.length()
 
     def draw(self, surface):
-        pygame.draw.line(surface, (255,0,0), self.phys.pos, self.phys.pos + self.dir * 20, 3)
+        pygame.draw.line(surface, (255,0,0), self.phys.pos, self.phys.pos + self.dir * 20, 5)
 
     def is_expired(self):
         return self.distance_travelled >= self.range
 
+    def is_dead(self):
+        return super().is_dead() or self.is_expired()
+    
     def get_radius(self):
         return 5
 
@@ -328,23 +337,90 @@ class Scrap(GameObject):
     def get_radius(self):
         return 12 # <<< placeholder value
 
+### --- ENEMY --- ###
+class Enemy(GameObject):
+    def __init__(self, pos):
+        super().__init__(pos)
+        
+
+### --- COLLISION HANDLER --- ###
+class CollisionHandler:
+    def __init__(self, game_ctrl: "GameCtrl"):
+        self.game = game_ctrl
+    
+    # combined collision handling method
+    def handle(self, a: GameObject, b: GameObject, to_remove: set):
+        if self.laser_player_ignore(a, b):
+            return
+        if self.scrap_player(a, b):
+            return
+        if self.laser_other(a, b, to_remove):
+            return
+        
+        self.default_collision(a, b)
+
+    # laser + player = ignore collision
+    def laser_player_ignore(self, a, b):
+        if (isinstance(a, Laser) and isinstance(b, Player)) or \
+           (isinstance(b, Laser) and isinstance(a, Player)):
+            return True
+        return False
+    
+    # scrap + player = remove scrap, increment points
+    def scrap_player(self, a, b):
+        if isinstance(a, Scrap) and isinstance(b, Player):
+            self.game.points += getattr(a, "point_value", 1)
+            a.timer = 0
+            return True
+        if isinstance(b, Scrap) and isinstance(a, Player):
+            self.game.points += getattr(b, "point_value", 1)
+            b.timer = 0
+            return True
+        return False
+    
+    # laser + other = deal laser damage
+    def laser_other(self, a, b, to_remove):
+        if isinstance(a, Laser) and not isinstance(b, (Laser, Player)):
+            b.take_damage(a.damage)
+            to_remove.add(a)
+            return True
+        if isinstance(b, Laser) and not isinstance(a, (Laser, Player)):
+            a.take_damage(b.damage)
+            to_remove.add(b)
+            return True
+        return False
+
+    # default collision
+    def default_collision(self, a, b):
+        a.phys.handle_collision(b.phys)
+        b.phys.handle_collision(a.phys)
+
+        rel_vel = (a.phys.vel - b.phys.vel).length()
+        if a.phys.mass > 0.1 and b.phys.mass > 0.1 and rel_vel > 0:
+            dmg_mltplr = 2.0    # damage multiplier
+            dmg1 = rel_vel * (b.phys.mass / a.phys.mass) * dmg_mltplr
+            dmg2 = rel_vel * (a.phys.mass / b.phys.mass) * dmg_mltplr
+            a.take_damage(dmg1)
+            b.take_damage(dmg2)
+
 ### --- GAME CONTROL --- ###
 class GameCtrl:
     def __init__(self):
         pygame.init()
-
         self.game_font = pygame.font.SysFont("Lucida Sans", 24)
         self.clock = pygame.time.Clock()
+        self.background = pygame.image.load("background.png")
+        self.window = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        self.collision = CollisionHandler(self)
 
-        self.player = Player()
         self.points = 0
+        self.player = Player()
         self.lasers = []
         self.rocks = []
         self.debris = []
         self.scrap = []
         self.enemies = []
-        self.background = pygame.image.load("background.png")
-        self.window = pygame.display.set_mode((1280, 720))
+        
         self.spawn_timer = 0
 
         self.main_loop()
@@ -409,45 +485,14 @@ class GameCtrl:
 
     def check_collisions(self):
         to_remove = set()
-        all_objects = [self.player] + self.rocks + self.lasers + self.scrap
+        all_objects = [self.player] + self.rocks + self.lasers + self.scrap + self.enemies
         for i, obj1 in enumerate(all_objects):
             for obj2 in all_objects[i+1:]:
                 if obj1.get_radius() and obj2.get_radius():
                     if obj1.collides_with(obj2):
-                        # laser ignores player
-                        if isinstance(obj1, Laser) and isinstance(obj2, Player):
-                            continue
-                        if isinstance(obj2, Laser) and isinstance(obj1, Player):
-                            continue
-                        
-                        # laser deals damage to everything else
-                        if isinstance(obj1, Laser) and not isinstance(obj2, Laser):
-                            obj2.take_damage(obj1.damage)
-                            to_remove.add(obj1)
-                        if isinstance(obj2, Laser) and not isinstance(obj1, Laser):
-                            obj1.take_damage(obj2.damage)
-                            to_remove.add(obj2)
-
-                        # scrap increases points when it collides with the player
-                        if isinstance(obj1, Scrap) and isinstance(obj2, Player):
-                            self.points += obj1.point_value
-                            obj1.timer = 0
-                        if isinstance(obj2, Scrap) and isinstance(obj1, Player):
-                            self.points += obj2.point_value
-                            obj2.timer = 0
-                        
-                        obj1.phys.handle_collision(obj2.phys)
-                        obj2.phys.handle_collision(obj1.phys)
-
-                        # Damage calculation
-                        rel_vel = (obj1.phys.vel - obj2.phys.vel).length()
-                        k = 1  # scaling constant, tweak as needed
-                        if obj1.phys.mass > 0.1 and obj2.phys.mass > 0.1:
-                            dmg1 = k * rel_vel * (obj2.phys.mass / obj1.phys.mass)
-                            dmg2 = k * rel_vel * (obj1.phys.mass / obj2.phys.mass)
-                            obj1.take_damage(dmg1)
-                            obj2.take_damage(dmg2)
+                        self.collision.handle(obj1, obj2, to_remove)
         
+        # remove marked lasers
         self.lasers = [l for l in self.lasers if l not in to_remove]
 
     def draw_window(self):
@@ -473,12 +518,21 @@ class GameCtrl:
         for rock in self.rocks:
             rock.draw(self.window)
 
-        # draw all relevant text
-        points_text = self.game_font.render(f"Points: {self.points}", True, (255,255,255))
-        self.window.blit(points_text, (16,16))
+        self.draw_text()
 
         pygame.display.flip()
 
+    # draw all in-game text
+    def draw_text(self):
+        # points display
+        points_text = self.game_font.render(f"Points: {self.points}", True, (255,255,255))
+        self.window.blit(points_text, (16,16))
+
+        # player hp
+        hp_text = self.game_font.render(f"{self.player.health}", True, (255,255,255))
+        hp_x = WINDOW_WIDTH // 2 - hp_text.get_width() // 2
+        hp_y = WINDOW_HEIGHT - hp_text.get_height() - 30
+        self.window.blit(hp_text, (hp_x, hp_y))
 
 if __name__ == "__main__":
     GameCtrl()
