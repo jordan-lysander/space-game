@@ -160,7 +160,7 @@ class Rock(GameObject):
         dir = pygame.Vector2(1, 0).rotate(angle) * speed
         mass = random.uniform(0.5, 1.5)
         spin_speed = random.uniform(-2, 2)
-        super().__init__(pos, vel=dir, mass=mass, img_path="door.png", scale=mass, facing=angle, spin_speed=spin_speed)
+        super().__init__(pos, vel=dir, mass=mass, img_path="asteroid.png", scale=mass, facing=angle, spin_speed=spin_speed)
         self.health.max_hp = mass*50
         self.health.hp = mass*50
 
@@ -233,20 +233,22 @@ class Debris(GameObject):
 
 ### --- LASER --- ###
 class Laser(GameObject):
-    def __init__(self, pos, angle):
+    def __init__(self, pos, angle, owner="player", colour=None):
         dir = pygame.Vector2(1, 0).rotate(angle)
         super().__init__(pos, vel=dir * 20, mass=0.005, img_path=None, scale=1.0, facing=angle)
         self.dir = dir
-        self.range = 200
+        self.range = 500
         self.distance_travelled = 0
         self.damage = 20
+        self.owner = owner
+        self.colour = colour if colour else ((80,220,255) if owner == "player" else (255,60,60))
 
     def update(self):
         super().update()
         self.distance_travelled += self.phys.vel.length()
 
     def draw(self, surface):
-        pygame.draw.line(surface, (255,0,0), self.phys.pos, self.phys.pos + self.dir * 20, 5)
+        pygame.draw.line(surface, self.colour, self.phys.pos, self.phys.pos + self.dir * 20, 5)
 
     def is_expired(self):
         return self.distance_travelled >= self.range
@@ -260,13 +262,14 @@ class Laser(GameObject):
 ### --- PLAYER --- ###
 class Player(GameObject):
     def __init__(self):
-        super().__init__((640,360), vel=(0,0), mass=2, img_path="robot.png", scale=1.0, facing=-90)
+        super().__init__((640,360), vel=(0,0), mass=2, img_path="spaceship.png", scale=1.0, facing=-90)
         self.health.is_visible = True
         self.max_speed = 5
         self.thrust = 0.18
         self.turn_vel = 0
         self.turn_friction = 0.85
         self.max_turn_speed = 6
+        self.graphics.img = pygame.transform.scale(self.graphics.img, (80,80))
 
     def update(self):
         # every frame, check which keys are pressed
@@ -290,9 +293,9 @@ class Player(GameObject):
         dir = pygame.Vector2(1, 0).rotate(self.phys.facing)
         side = dir.rotate(90)
         self.phys.acc = pygame.Vector2(0, 0)
-        if keys[pygame.K_UP] or keys[pygame.K_w]:
+        if keys[pygame.K_w]:
             self.phys.acc += dir * self.thrust        
-        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+        if keys[pygame.K_s]:
             self.phys.acc -= dir * self.thrust
         if keys[pygame.K_q]:
             self.phys.acc -= side * self.thrust
@@ -310,6 +313,157 @@ class Player(GameObject):
 
         if self.phys.vel.length() > self.max_speed:
             self.phys.vel.scale_to_length(self.max_speed)
+
+### --- ENEMY --- ###
+class Enemy(GameObject):
+    def __init__(self, pos):
+        facing = random.uniform(0,360)
+        super().__init__(pos, vel=(0,0), mass=1.8, img_path="enemyship.png", scale=0.9, facing=facing, max_hp=80, hp_visible=True)
+
+        # movement
+        self.max_speed = random.uniform(2.0, 3.5)
+        self.thrust = random.uniform(0.07, 0.10)
+        self.turn_vel = 0
+        self.turn_friction = 0.7
+        self.max_turn_speed = random.uniform(2.0, 4.0)
+        
+        # behaviour
+        self.accuracy = random.uniform(0.2, 0.4)
+        self.aggression = random.uniform(0.4, 0.9)
+        self.bravery = random.uniform(0.3, 0.9)
+        self.preferred_range = random.uniform(220, 420)
+        self.vision_range = 900
+        self.fire_range = random.uniform(280, 520)
+        self.fire_cooldown_base = random.randint(28, 64)
+        self.fire_cooldown = 0
+        self.state = "wander"
+
+        self.wander_timer = 0
+        self.wander_dir = 0
+    
+    def update(self, player: "Player", rocks: list["Rock"], others: list["Enemy"]):
+        to_player = player.phys.pos - self.phys.pos
+        dist = to_player.length()
+
+        low_hp = self.health.hp < (self.health.max_hp * (0.35 * (1 - self.bravery) + 0.15))
+        if low_hp and dist < 600:
+            self.state = "flee"
+        elif dist < self.vision_range:
+            self.state = "attack"
+        else:
+            self.state = "wander"
+
+        self.phys.acc = pygame.Vector2(0,0)
+        forward = pygame.Vector2(1,0).rotate(self.phys.facing)
+        right = forward.rotate(90)
+
+        def turn_towards(target_angle, turn_acc=0.55):
+            diff = (target_angle - self.phys.facing + 180) % 360 - 180
+            self.turn_vel += turn_acc * (1 if diff > 0 else -1)
+            self.turn_vel *= self.turn_friction
+            if abs(self.turn_vel) > self.max_turn_speed:
+                self.turn_vel = self.max_turn_speed * (1 if self.turn_vel > 0 else -1)
+            self.phys.facing = (self.phys.facing + self.turn_vel) % 360
+            return diff
+        
+        def separation():
+            force = pygame.Vector2(0,0)
+            for obs in rocks + [o for o in others if o is not self]:
+                away = self.phys.pos - obs.phys.pos
+                d = away.length()
+                if d > 1 and d < 140:
+                    away.scale_to_length(min(2.5, 140.0 / d))
+                    force += away
+            return force
+        
+        if self.state == "wander":
+            self.wander_timer -= 1
+            if self.wander_timer <= 0:
+                self.wanter_timer = random.randint(15, 45)
+                self.wander_dir = random.uniform(-0.9, 0.9)
+            self.turn_vel += 0.2 * self.wander_dir
+            self.turn_vel *= self.turn_friction
+            self.phys.facing = (self.phys.facing + self.turn_vel) % 360
+            self.phys.acc += forward * (self.thrust * 0.6)
+
+        if self.state == "attack":
+            desired_angle = pygame.Vector2(1, 0).angle_to(to_player)
+            angle_error = turn_towards(desired_angle)
+
+            # Move logic: approach if too far, back off if too close, strafe around preferred range
+            near = dist < self.preferred_range * 0.85
+            far = dist > self.preferred_range * 1.2
+
+            if far:
+                self.phys.acc += forward * (self.thrust * (0.8 + 0.4 * self.aggression))
+            elif near:
+                self.phys.acc -= forward * (self.thrust * (0.6 + 0.4 * (1 - self.aggression)))
+            else:
+                # Strafe with a slight bias so they circle
+                strafe_dir = 1 if (hash(id(self)) & 1) else -1
+                self.phys.acc += right * (self.thrust * 0.9 * strafe_dir)
+
+            # Add a touch of noise so they don't lock perfectly
+            self.phys.acc += pygame.Vector2(random.uniform(-0.06, 0.06), random.uniform(-0.06, 0.06))
+
+            # Shooting
+            self.fire_cooldown = max(0, self.fire_cooldown - 1)
+            if dist < self.fire_range and self.fire_cooldown == 0:
+                # gate by aim error (convert accuracy to allowed degrees)
+                allowed_error = (1.0 - self.accuracy) * 40 + 4  # 4..44 deg
+                if abs(angle_error) < allowed_error:
+                    # add aim spread
+                    spread = random.uniform(-allowed_error * 0.5, allowed_error * 0.5)
+                    shot_angle = (self.phys.facing + spread) % 360
+                    self._shoot(shot_angle)
+                    # randomized cooldown
+                    jitter = random.randint(-6, 12)
+                    self.fire_cooldown = max(8, self.fire_cooldown_base + jitter)
+
+        # Flee behavior: face away and burn
+        if self.state == "flee":
+            desired_angle = (pygame.Vector2(1, 0).angle_to(-to_player)) % 360
+            turn_towards(desired_angle, turn_acc=0.7)
+            self.phys.acc += forward * (self.thrust * 1.2)
+
+        # Avoid obstacles/others
+        self.phys.acc += separation() * 0.06
+
+        # Integrate and clamp similar to player
+        super().update()
+        self.phys.pos.x = max(0, min(1280, self.phys.pos.x))
+        self.phys.pos.y = max(0, min(720, self.phys.pos.y))
+
+        # Dampen velocity and clamp speed
+        self.phys.vel *= 0.992
+        if self.phys.vel.length() > self.max_speed:
+            self.phys.vel.scale_to_length(self.max_speed)
+
+    def _shoot(self, angle):
+        # enemy laser is a different colour
+        self.game.lasers.append(Laser(self.phys.pos, angle, owner="enemy", colour=(255,60,60)))
+
+    # give access to GameCtrl at runtime
+    @property
+    def game(self) -> "GameCtrl":
+        return self._game
+
+    @game.setter
+    def game(self, g: "GameCtrl"):
+        self._game = g
+
+    @classmethod
+    def spawn_random(cls):
+        edge = random.choice(['top', 'bottom', 'left', 'right'])
+        if edge == 'top':
+            pos = (random.randint(40, 1240), -30)
+        elif edge == 'bottom':
+            pos = (random.randint(40, 1240), 750)
+        elif edge == 'left':
+            pos = (-30, random.randint(40, 680))
+        else:
+            pos = (1310, random.randint(40, 680))
+        return cls(pos)
 
 ### --- SCRAP --- ###
 class Scrap(GameObject):
@@ -337,11 +491,6 @@ class Scrap(GameObject):
     def get_radius(self):
         return 12 # <<< placeholder value
 
-### --- ENEMY --- ###
-class Enemy(GameObject):
-    def __init__(self, pos):
-        super().__init__(pos)
-        
 
 ### --- COLLISION HANDLER --- ###
 class CollisionHandler:
@@ -350,7 +499,7 @@ class CollisionHandler:
     
     # combined collision handling method
     def handle(self, a: GameObject, b: GameObject, to_remove: set):
-        if self.laser_player_ignore(a, b):
+        if self.laser_owner_ignore(a, b):
             return
         if self.scrap_player(a, b):
             return
@@ -359,11 +508,14 @@ class CollisionHandler:
         
         self.default_collision(a, b)
 
-    # laser + player = ignore collision
-    def laser_player_ignore(self, a, b):
-        if (isinstance(a, Laser) and isinstance(b, Player)) or \
-           (isinstance(b, Laser) and isinstance(a, Player)):
-            return True
+    # laser + owner = ignore collision
+    def laser_owner_ignore(self, a, b):
+        if isinstance(a, Laser):
+            if (a.owner == "player" and isinstance(b, Player)) or (a.owner == "enemy" and isinstance(b, Enemy)):
+                return True
+        if isinstance(b, Laser):
+            if (b.owner == "player" and isinstance(a, Player)) or (b.owner == "enemy" and isinstance(a, Enemy)):
+                return True
         return False
     
     # scrap + player = remove scrap, increment points
@@ -380,11 +532,15 @@ class CollisionHandler:
     
     # laser + other = deal laser damage
     def laser_other(self, a, b, to_remove):
-        if isinstance(a, Laser) and not isinstance(b, (Laser, Player)):
+        if isinstance(a, Laser) and not isinstance(b, (Laser)):
+            if (a.owner == "player" and isinstance(b, Player)) or (a.owner == "enemy" and isinstance(b, Enemy)):
+                return True
             b.take_damage(a.damage)
             to_remove.add(a)
             return True
-        if isinstance(b, Laser) and not isinstance(a, (Laser, Player)):
+        if isinstance(b, Laser) and not isinstance(a, (Laser)):
+            if (b.owner == "player" and isinstance(a, Player)) or (b.owner == "enemy" and isinstance(a, Enemy)):
+                return True
             a.take_damage(b.damage)
             to_remove.add(b)
             return True
@@ -422,6 +578,7 @@ class GameCtrl:
         self.enemies = []
         
         self.spawn_timer = 0
+        self.enemy_spawn_timer = 0
 
         self.main_loop()
 
@@ -439,7 +596,7 @@ class GameCtrl:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     # Shoot laser from player's position and angle
-                    self.lasers.append(Laser(self.player.phys.pos, self.player.phys.facing))
+                    self.lasers.append(Laser(self.player.phys.pos, self.player.phys.facing, owner="player"))
 
     def update(self):
         self.player.update()
@@ -447,6 +604,7 @@ class GameCtrl:
         self.update_rocks()
         self.update_debris()
         self.update_scrap()
+        self.update_enemies()
         self.check_collisions()
         
     def update_lasers(self):
@@ -477,11 +635,29 @@ class GameCtrl:
             s.update()
         self.scrap = [s for s in self.scrap if not s.is_expired()]
 
+    def update_enemies(self):
+        for e in self.enemies:
+            e.update(self.player, self.rocks, self.enemies)
+            if e.health.hp <= 0:
+                for _ in range(random.randint(6, 12)):
+                    self.debris.append(Debris(e.phys.pos, colour=(200,120,120)))
+                if random.random() < 0.6:
+                    value = random.randint(3, 12)
+                    self.scrap.append(Scrap(e.phys.pos, e.phys.vel, value))
+        self.enemies = [e for e in self.enemies if e.health.hp > 0]
+
     def spawner(self):
         self.spawn_timer += 1
         if self.spawn_timer > 120 and len(self.rocks) <= 10:
             self.spawn_timer = 0
             Rock.spawn_random(self.rocks)
+
+        self.enemy_spawn_timer += 1
+        if self.enemy_spawn_timer > 420 and len(self.enemies) < 2:
+            self.enemy_spawn_timer = 0
+            e = Enemy.spawn_random()
+            e.game = self  # allow enemy to emit lasers into game
+            self.enemies.append(e)
 
     def check_collisions(self):
         to_remove = set()
@@ -511,12 +687,14 @@ class GameCtrl:
         for laser in self.lasers:
             laser.draw(self.window)
         self.player.draw(self.window)
+        for enemy in self.enemies:
+            enemy.draw(self.window)
         for scrap in self.scrap:
             scrap.draw(self.window)
-        for debr in self.debris:
-            debr.draw(self.window)
         for rock in self.rocks:
             rock.draw(self.window)
+        for debr in self.debris:
+            debr.draw(self.window)
 
         self.draw_text()
 
